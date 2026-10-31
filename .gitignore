@@ -32,3 +32,4 @@ outputs/
 *.pth
 *.ckpt
 *.safetensors
+EXPLANATION.md
