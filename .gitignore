@@ -33,3 +33,4 @@ outputs/
 *.ckpt
 *.safetensors
 EXPLANATION.md
+/EXPLANATION
