@@ -10,6 +10,22 @@ A small, incremental project for learning how language models work. The project 
 - Transformer is the neural network architecture combining these mechanisms.
 - LLM is the complete trained language-model system, including its learned parameters and inference process.
 
+## Pipeline covered
+
+The project builds a tiny language model in these stages:
+
+- Tokenization
+- Dataset preparation
+- Tensor conversion
+- Token embeddings
+- Next-token prediction
+- Training
+- Text generation
+- Causal self-attention
+- Transformer block
+- Tiny GPT-style model
+- Runtime inspection
+
 ## Current status
 
 - `CharTokenizer` builds a vocabulary from the characters in a training string.
