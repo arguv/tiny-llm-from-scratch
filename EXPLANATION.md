@@ -1139,3 +1139,176 @@ A working transformer block combines **causal attention, feature transformation,
 
 We have not yet connected this block to token and position embeddings and a vocabulary output layer. That assembly belongs to Step 10.
 
+
+---
+
+# Step 10 — Assemble a tiny GPT-style model
+
+## Goal
+
+Combine our components into a complete, simplified transformer language model, then train it and generate text.
+
+The model has one causal attention head and one transformer block. It demonstrates GPT-style next-token prediction on a tiny character dataset; it is not a production LLM.
+
+## 1. What the model contains
+
+In `src/gpt.py`, `TinyGPT` inherits from nn.Module and assembles:
+
+| Component | Purpose |
+|---|---|
+| TokenEmbedding | Look up the vector for each character ID |
+| Position embedding | Look up a vector for each position in the context window |
+| TransformerBlock | Combine allowed context and transform features |
+| Final LayerNorm | Normalize each final token representation |
+| Linear output layer | Convert representations into vocabulary logits |
+
+The old bigram model remains available for comparison.
+
+## 2. Why add position embeddings?
+
+Token embeddings identify which character is present. Position embeddings give an explicit trainable representation of where it occurs within the input window.
+
+For block_size 4 and embedding_dim 6, the position table has shape (4, 6): one six-value vector for each position 0 through 3.
+
+The causal mask controls which positions may contribute. Position embeddings supply explicit position information; these are different roles.
+
+## 3. Follow the forward method
+
+The method validates that token_ids has two dimensions and that sequence length is between 1 and block_size.
+
+| Code | Purpose |
+|---|---|
+| `torch.arange(sequence_length, device=token_ids.device)` | Create position IDs from zero to sequence length minus one |
+| `self.token_embedding(token_ids)` | Look up character vectors |
+| `self.position_embedding(positions)` | Look up position vectors |
+| `token_vectors + position_vectors` | Combine identity and position by elementwise addition |
+| `self.block(x)` | Apply causal attention and feed-forward processing with residual paths |
+| `self.final_norm(x)` | Normalize the final features |
+| `self.output(x)` | Produce scores for every vocabulary token |
+
+Position vectors are broadcast across examples. Every example uses the same position table, while its character IDs may differ.
+
+## 4. Understand the shapes
+
+For seven examples of four tokens:
+
+| Stage | Shape |
+|---|---|
+| Token IDs | (7, 4) |
+| Position IDs | (4,) |
+| Token vectors | (7, 4, 6) |
+| Position vectors | (4, 6) |
+| Combined representations | (7, 4, 6) |
+| Transformer and final normalization output | (7, 4, 6) |
+| Vocabulary logits | (7, 4, 8) |
+
+The output has one score per vocabulary entry at every input position. Position addition does not concatenate vectors or increase their length.
+
+## 5. How training reuses earlier work
+
+In `scripts/step_10_gpt.py`, we recreate the tokenizer and seven examples, then create a fresh TinyGPT model.
+
+We reuse calculate_loss() from Step 6 because the new model returns the same logits format. The optimizer now receives the parameters of the transformer model, including the position embeddings.
+
+Each of 400 updates performs:
+
+1. Clear previous gradients.
+2. Run the model on x.
+3. Compare its logits with y using cross-entropy.
+4. Calculate gradients with backward().
+5. Update parameters with optimizer.step().
+
+We choose learning rate 0.01 for this demonstration and use one CPU thread.
+
+Initial and final loss measurements run without gradient tracking. The expected final training loss is substantially lower; exact numbers depend on the environment.
+
+## 6. Count the parameters
+
+For vocabulary size 8, embedding dimension 6, and block size 4:
+
+| Component | Parameters |
+|---|---:|
+| Token embeddings: 8 × 6 | 48 |
+| Position embeddings: 4 × 6 | 24 |
+| Query, key, value weights: 3 × 6 × 6 | 108 |
+| Two block LayerNorms: 2 × (6 scales + 6 biases) | 24 |
+| Feed-forward expansion: 24 × 6 weights + 24 biases | 168 |
+| Feed-forward reduction: 6 × 24 weights + 6 biases | 150 |
+| Final LayerNorm: 6 scales + 6 biases | 12 |
+| Vocabulary output: 8 × 6 weights + 8 biases | 56 |
+| **Total** | **590** |
+
+These parameters are adjustable values. Their count is independent of the number of training examples.
+
+## 7. Why generation must use context now
+
+Step 7’s generation function passed only the last token because the bigram model used only that token.
+
+TinyGPT’s generate() method instead uses `context = generated[:, -self.block_size:]`. It passes the most recent available tokens, up to four, through the transformer.
+
+| Stored sequence length | Context length passed to the model |
+|---|---|
+| 1 | 1 |
+| 3 | 3 |
+| 4 | 4 |
+| 9 | 4: the last four tokens |
+
+Passing only the last token would discard the preceding context that attention can use.
+
+The stored sequence keeps growing. Cropping limits what the model reads; it does not delete the earlier tokens from the returned sequence.
+
+## 8. Follow one generation iteration
+
+1. Crop the most recent context.
+2. Run the model on that context.
+3. Select logits for the final context position.
+4. Choose the highest-scoring ID using argmax.
+5. Append that ID to generated.
+
+For one example and context length T:
+
+| Tensor | Shape |
+|---|---|
+| Context | (1, T), where 1 ≤ T ≤ 4 |
+| Logits | (1, T, 8) |
+| Final-position logits | (1, 8) |
+| Selected next token | (1, 1) |
+
+The position IDs restart at zero for each cropped window. Generation uses evaluation mode and disables gradient tracking. No optimizer updates occur.
+
+A one-token prompt plus ten new tokens returns shape (1, 11).
+
+## 9. Understand the expected output and limitations
+
+The script should report input shape (7, 4), logits shape (7, 4, 8), position table shape (4, 6), parameter count 590, decreased training loss, and generated shape (1, 11).
+
+The generated string should contain eleven characters beginning with h. Exact text can vary.
+
+Even with a transformer, this dataset is extremely small and contains overlapping windows and ambiguous short contexts. Lower training loss is not evidence of general language understanding or reliable performance on unseen text.
+
+## 10. Verify the assembled architecture
+
+In `tests/test_gpt.py`, we added three tests:
+
+| Test | What it proves |
+|---|---|
+| Causality | Changing the final input ID cannot change earlier logits |
+| Position embeddings affect output | Changing one position vector affects that position’s output while an earlier position stays unchanged |
+| Generation crops context | A prompt longer than the window can be extended without passing an oversized input into forward(); the original prompt is preserved |
+
+The generation test fixes the output layer to always choose token ID 2, making the expected appended sequence deterministic.
+
+With all earlier tests present and passing, the expected total is **27 passed**. This is an expected result, not a reported test run.
+
+## 11. Installations and storage
+
+No new installations are required. Activate the existing project .venv.
+
+The script creates, trains, and uses the model in one process. Parameters and outputs live in memory. No checkpoint is saved, so running the script again creates a fresh model and trains it again.
+
+## What we achieved
+
+**Token IDs + positions → embeddings → transformer block → final normalization → vocabulary logits → next-token selection**
+
+Our project now has a complete tiny GPT-style model with training and context-aware generation. Step 11 will trace how these components execute during generation.
+
