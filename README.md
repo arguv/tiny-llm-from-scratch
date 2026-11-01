@@ -1,6 +1,6 @@
 # Tiny LLM from Scratch
 
-A small, incremental project for learning how language models work. The project currently covers character-level tokenization, preparing shifted input/target examples, converting those examples into PyTorch tensors, looking up trainable token embeddings, producing next-token scores with a tiny bigram language model, training that model with cross-entropy loss, generating text one token at a time, and implementing causal self-attention.
+A small, incremental project for learning how language models work. The project currently covers character-level tokenization, preparing shifted input/target examples, converting those examples into PyTorch tensors, looking up trainable token embeddings, producing next-token scores with a tiny bigram language model, training that model with cross-entropy loss, generating text one token at a time, implementing causal self-attention, and assembling a transformer block.
 
 ## Important distinctions
 
@@ -24,7 +24,8 @@ A small, incremental project for learning how language models work. The project 
 - `train_model` updates model parameters with Adam and reports the initial and final loss.
 - `generate` repeatedly selects the highest-scoring next token and appends it to a prompt.
 - `CausalSelfAttention` uses scaled dot-product attention while blocking future positions.
-- Tokenizer, dataset, tensor, embedding, model, training, generation, and attention components are covered by pytest tests.
+- `TransformerBlock` combines layer normalization, causal attention, residual connections, and a GELU feed-forward network.
+- Tokenizer, dataset, tensor, embedding, model, training, generation, attention, and transformer components are covered by pytest tests.
 
 ## Project layout
 
@@ -45,6 +46,8 @@ src/generation.py             Greedy autoregressive generation
 scripts/step_07_generation.py Text generation demonstration
 src/attention.py              Causal self-attention component
 scripts/step_08_attention.py  Attention masking demonstration
+src/transformer.py            Transformer block with residual processing
+scripts/step_09_transformer.py Transformer block demonstration
 tests/test_tokenizer.py       Automated tests
 tests/test_dataset.py         Dataset helper tests
 tests/test_tensors.py         Tensor helper tests
@@ -53,6 +56,7 @@ tests/test_model.py            Model tests
 tests/test_training.py        Training helper tests
 tests/test_generation.py      Generation helper tests
 tests/test_attention.py       Attention component tests
+tests/test_transformer.py     Transformer block tests
 requirements.txt              Pinned development dependencies
 ```
 
@@ -129,6 +133,14 @@ python scripts/step_08_attention.py
 ```
 
 The attention demo projects token embeddings into queries, keys, and values, computes scaled dot-product scores, masks future positions, and prints the resulting attention weights. Each row of weights sums to one, and no token can attend to a later token.
+
+To inspect a complete transformer block:
+
+```bash
+python scripts/step_09_transformer.py
+```
+
+The transformer demo applies layer normalization, causal self-attention, residual connections, and a two-layer GELU feed-forward network to the embedding sequence. It verifies that the block preserves shape, produces finite values, and keeps earlier positions independent of a changed future position.
 
 ## Run the tests
 
@@ -246,4 +258,17 @@ assert tuple(weights.shape) == (len(examples), 4, 4)
 
 For input shape `(batch, sequence, embedding)`, the output has the same shape and the attention weights have shape `(batch, sequence, sequence)`. The causal lower-triangular mask ensures position `i` can use positions `0` through `i`, but never a future position.
 
-The training text must not be empty, every character passed to `encode` must appear in the training text, and the token sequence must contain at least `block_size + 1` tokens. `examples_to_tensors` requires at least one example, `generate` requires a nonempty two-dimensional prompt tensor, and attention requires a three-dimensional sequence tensor. Local environments, caches, generated datasets, checkpoints, and credentials are excluded by `.gitignore`.
+The attention output can be processed by a transformer block:
+
+```python
+from src.transformer import TransformerBlock
+
+block = TransformerBlock(embedding_dim=6)
+block_output = block(vectors)
+
+assert tuple(block_output.shape) == tuple(vectors.shape)
+```
+
+`TransformerBlock` uses pre-layer normalization, then adds the attention result back to the input through a residual connection. A second normalized residual branch applies a feed-forward network that expands the embedding dimension by four, applies GELU, and projects back to the original size. The block is causal but is not integrated into the language-model output layer yet.
+
+The training text must not be empty, every character passed to `encode` must appear in the training text, and the token sequence must contain at least `block_size + 1` tokens. `examples_to_tensors` requires at least one example, `generate` requires a nonempty two-dimensional prompt tensor, and attention and transformer blocks require a three-dimensional sequence tensor. Local environments, caches, generated datasets, checkpoints, and credentials are excluded by `.gitignore`.

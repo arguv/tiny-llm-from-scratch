@@ -991,3 +991,151 @@ The demonstration runs without gradient tracking and performs no training update
 
 We now have a tested component that lets each position gather information from itself and earlier positions while blocking access to future input.
 
+
+---
+
+# Step 9 — Build a transformer block
+
+## Goal
+
+Combine Step 8’s causal attention with a feed-forward network, layer normalization, and residual connections.
+
+The block receives vectors, processes context and features, and returns vectors of the same shape. It is still a component, not a complete language model.
+
+## 1. Why attention alone is not the whole block
+
+Attention mixes information between allowed token positions. A transformer block also transforms the features within each position and provides direct paths for information and gradients.
+
+| Component | Purpose |
+|---|---|
+| Causal attention | Gather information from the current and preceding positions |
+| Feed-forward network | Transform each position’s features independently |
+| Layer normalization | Normalize features within each token vector |
+| Residual addition | Add a processing result back to its input |
+
+We retain our single attention head as a simplified implementation.
+
+## 2. What the class creates
+
+In `src/transformer.py`, `TransformerBlock` inherits from `nn.Module` and creates:
+
+- `norm1`: layer normalization before attention.
+- `attention`: the causal component from Step 8.
+- `norm2`: layer normalization before the feed-forward network.
+- `feed_forward`: two linear layers with GELU between them.
+
+Because normalization comes before each processing branch, this is a **pre-normalization block**.
+
+## 3. Normalize each token’s features
+
+`nn.LayerNorm(embedding_dim)` operates across the last dimension. With input shape (1, 4, 6), it normalizes each six-feature vector independently.
+
+It does not normalize across sequence positions or mix examples. It also has trainable scale and bias values for the features.
+
+Normalization helps control the numerical scale of representations. Its output retains shape (1, 4, 6).
+
+## 4. Apply attention and the first residual connection
+
+The first forward line is `attention_output, _ = self.attention(self.norm1(x))`.
+
+The steps are:
+
+1. Normalize x.
+2. Pass normalized vectors into causal attention.
+3. Receive context-dependent vectors and attention weights.
+4. Keep the vectors; the underscore means we do not use the weights here.
+
+Then `x = x + attention_output` adds the attention result to the original, unnormalized x.
+
+| Tensor | Shape |
+|---|---|
+| Original x | (1, 4, 6) |
+| Normalized attention input | (1, 4, 6) |
+| Attention output | (1, 4, 6) |
+| First residual result | (1, 4, 6) |
+
+The addition is element by element. It preserves a direct input path while adding contextual information.
+
+## 5. Transform features using the feed-forward network
+
+The network uses the same weights at every token position. It does not itself exchange information between positions.
+
+| Operation | Feature change | Tensor shape |
+|---|---|---|
+| First linear layer | 6 → 24 | (1, 4, 24) |
+| GELU | 24 → 24 | (1, 4, 24) |
+| Second linear layer | 24 → 6 | (1, 4, 6) |
+
+GELU adds nonlinearity. Without a nonlinear operation, the two linear layers could be represented as a single affine transformation.
+
+The expansion factor of four is our architecture choice, not a requirement.
+
+## 6. Apply the second residual connection
+
+`feed_forward_output = self.feed_forward(self.norm2(x))` normalizes the updated x and transforms its features.
+
+Then `x = x + feed_forward_output` adds the result to that updated representation.
+
+Returning to six features makes the branch output match x for residual addition. It does not convert vectors into token IDs or set the vocabulary size.
+
+The block finally returns x.
+
+## 7. Follow the complete computation
+
+| Stage | Shape |
+|---|---|
+| Input vectors | (1, 4, 6) |
+| Normalize and attend | (1, 4, 6) |
+| Add original input | (1, 4, 6) |
+| Normalize and expand | (1, 4, 24) |
+| GELU and reduce | (1, 4, 6) |
+| Add second residual input | (1, 4, 6) |
+
+Preserving shape lets us pass the output into another compatible block later.
+
+## 8. What the demonstration checks
+
+In `scripts/step_09_transformer.py`, we embed "hell", run the block, and check that its output is finite.
+
+Then we copy the input vectors and change one feature of the final position. We run the block again and compare earlier positions.
+
+Expected results:
+
+| Printed item | Expected value |
+|---|---|
+| Token IDs shape | (1, 4) |
+| Block input shape | (1, 4, 6) |
+| Block output shape | (1, 4, 6) |
+| Output is finite | True |
+| Earlier positions unchanged | True |
+
+Earlier positions remain unchanged because attention is causal, and normalization and feed-forward processing operate within each position.
+
+The script runs without gradient tracking and performs no training updates.
+
+## 9. Verify the block with tests
+
+In `tests/test_transformer.py`, we added three tests:
+
+| Test | What it proves |
+|---|---|
+| Shape and causality | Output shape is preserved, values are finite, and changing the future does not affect earlier outputs |
+| Zero processing branches | When both attention and feed-forward branches output zero, residual connections return the input unchanged |
+| Gradient flow | Backpropagation produces finite gradients for input vectors and all block parameters |
+
+The gradient test creates input with `requires_grad=True`, calculates a scalar mean-squared-output loss, and calls backward(). This tests differentiability; it does not run an optimizer or train a language model.
+
+With all earlier tests present and passing, the expected total is **24 passed**. This is the expected outcome, not a reported test run.
+
+## 10. Installations and storage
+
+No new installations are required. Activate the existing project .venv and use PyTorch and pytest.
+
+The block and tensors remain in memory during execution. We have not saved a checkpoint.
+
+## What we achieved
+
+A working transformer block combines **causal attention, feature transformation, normalization, and residual paths** while preserving shape.
+
+We have not yet connected this block to token and position embeddings and a vocabulary output layer. That assembly belongs to Step 10.
+
