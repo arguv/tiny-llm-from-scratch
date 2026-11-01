@@ -1,6 +1,6 @@
 # Tiny LLM from Scratch
 
-A small, incremental project for learning how language models work. The project currently covers character-level tokenization, preparing shifted input/target examples, converting those examples into PyTorch tensors, looking up trainable token embeddings, and producing next-token scores with a tiny bigram language model.
+A small, incremental project for learning how language models work. The project currently covers character-level tokenization, preparing shifted input/target examples, converting those examples into PyTorch tensors, looking up trainable token embeddings, producing next-token scores with a tiny bigram language model, and training that model with cross-entropy loss.
 
 ## Important distinctions
 
@@ -20,7 +20,9 @@ A small, incremental project for learning how language models work. The project 
 - `examples_to_tensors` converts examples into CPU `torch.long` tensors.
 - `TokenEmbedding` maps token IDs to trainable CPU floating-point vectors.
 - `BigramLanguageModel` maps each token embedding to a score for every vocabulary item.
-- Tokenizer, dataset, tensor, embedding, and model components are covered by pytest tests.
+- `calculate_loss` measures next-token prediction error with cross-entropy.
+- `train_model` updates model parameters with Adam and reports the initial and final loss.
+- Tokenizer, dataset, tensor, embedding, model, and training components are covered by pytest tests.
 
 ## Project layout
 
@@ -35,11 +37,14 @@ src/embeddings.py             Trainable token embedding component
 scripts/step_04_embeddings.py Embedding lookup demonstration
 src/model.py                  Tiny bigram language model
 scripts/step_05_model.py      Model forward-pass demonstration
+src/training.py               Loss calculation and training loop
+scripts/step_06_training.py   Model training demonstration
 tests/test_tokenizer.py       Automated tests
 tests/test_dataset.py         Dataset helper tests
 tests/test_tensors.py         Tensor helper tests
 tests/test_embeddings.py      Embedding component tests
 tests/test_model.py            Model tests
+tests/test_training.py        Training helper tests
 requirements.txt              Pinned development dependencies
 ```
 
@@ -92,6 +97,14 @@ python scripts/step_05_model.py
 ```
 
 The model embeds each input token and passes the resulting vectors through a linear layer. For an input tensor shaped `(batch, sequence)`, it returns logits shaped `(batch, sequence, vocabulary)`: one score for every possible next token at every position. Taking `argmax(dim=-1)` selects the highest-scoring token ID, but the model is untrained, so these predictions are not meaningful yet.
+
+To train the bigram model on the example data:
+
+```bash
+python scripts/step_06_training.py
+```
+
+The training demo runs 200 Adam updates, prints the initial and final cross-entropy loss, and checks that the loss decreased. It then switches the model to evaluation mode and predicts the next character after `h`.
 
 ## Run the tests
 
@@ -161,6 +174,24 @@ assert tuple(logits.shape) == (len(examples), 4, tokenizer.vocab_size)
 assert tuple(predicted_ids.shape) == (len(examples), 4)
 ```
 
-This first model uses only the current token’s embedding when producing its scores. It has no attention, positional information, loss calculation, or training loop yet; those are future steps.
+This first model uses only the current token’s embedding when producing its scores. It has no attention, positional information, or context window beyond the current token.
+
+The model can be trained with the helpers in `src/training.py`:
+
+```python
+from src.training import calculate_loss, train_model
+
+initial_loss, final_loss = train_model(
+    model,
+    x,
+    y,
+    steps=200,
+    learning_rate=0.05,
+)
+
+assert final_loss < initial_loss
+```
+
+`calculate_loss` flattens the model’s `(batch, sequence, vocabulary)` logits and the `(batch, sequence)` target IDs before applying cross-entropy. `train_model` performs the forward pass, loss calculation, backpropagation, and Adam update for each step. It rejects `steps < 1` and returns the loss before and after training.
 
 The training text must not be empty, every character passed to `encode` must appear in the training text, and the token sequence must contain at least `block_size + 1` tokens. `examples_to_tensors` requires at least one example. Local environments, caches, generated datasets, checkpoints, and credentials are excluded by `.gitignore`.
