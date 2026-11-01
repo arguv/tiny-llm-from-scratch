@@ -1,6 +1,6 @@
 # Tiny LLM from Scratch
 
-A small, incremental project for learning how language models work. The project currently covers character-level tokenization, preparing shifted input/target examples, converting those examples into PyTorch tensors, looking up trainable token embeddings, producing next-token scores with a tiny bigram language model, and training that model with cross-entropy loss.
+A small, incremental project for learning how language models work. The project currently covers character-level tokenization, preparing shifted input/target examples, converting those examples into PyTorch tensors, looking up trainable token embeddings, producing next-token scores with a tiny bigram language model, training that model with cross-entropy loss, and generating text one token at a time.
 
 ## Important distinctions
 
@@ -22,7 +22,8 @@ A small, incremental project for learning how language models work. The project 
 - `BigramLanguageModel` maps each token embedding to a score for every vocabulary item.
 - `calculate_loss` measures next-token prediction error with cross-entropy.
 - `train_model` updates model parameters with Adam and reports the initial and final loss.
-- Tokenizer, dataset, tensor, embedding, model, and training components are covered by pytest tests.
+- `generate` repeatedly selects the highest-scoring next token and appends it to a prompt.
+- Tokenizer, dataset, tensor, embedding, model, training, and generation components are covered by pytest tests.
 
 ## Project layout
 
@@ -39,12 +40,15 @@ src/model.py                  Tiny bigram language model
 scripts/step_05_model.py      Model forward-pass demonstration
 src/training.py               Loss calculation and training loop
 scripts/step_06_training.py   Model training demonstration
+src/generation.py             Greedy autoregressive generation
+scripts/step_07_generation.py Text generation demonstration
 tests/test_tokenizer.py       Automated tests
 tests/test_dataset.py         Dataset helper tests
 tests/test_tensors.py         Tensor helper tests
 tests/test_embeddings.py      Embedding component tests
 tests/test_model.py            Model tests
 tests/test_training.py        Training helper tests
+tests/test_generation.py      Generation helper tests
 requirements.txt              Pinned development dependencies
 ```
 
@@ -105,6 +109,14 @@ python scripts/step_06_training.py
 ```
 
 The training demo runs 200 Adam updates, prints the initial and final cross-entropy loss, and checks that the loss decreased. It then switches the model to evaluation mode and predicts the next character after `h`.
+
+To generate text from the trained model:
+
+```bash
+python scripts/step_07_generation.py
+```
+
+The generation demo trains the model, starts with the prompt `h`, and appends 10 predicted characters. Generation uses greedy decoding: at each step it selects the highest-scoring token, runs without gradients, preserves the original prompt, and leaves model parameters unchanged.
 
 ## Run the tests
 
@@ -194,4 +206,18 @@ assert final_loss < initial_loss
 
 `calculate_loss` flattens the model’s `(batch, sequence, vocabulary)` logits and the `(batch, sequence)` target IDs before applying cross-entropy. `train_model` performs the forward pass, loss calculation, backpropagation, and Adam update for each step. It rejects `steps < 1` and returns the loss before and after training.
 
-The training text must not be empty, every character passed to `encode` must appear in the training text, and the token sequence must contain at least `block_size + 1` tokens. `examples_to_tensors` requires at least one example. Local environments, caches, generated datasets, checkpoints, and credentials are excluded by `.gitignore`.
+After training, text can be generated from a nonempty batch of prompt IDs:
+
+```python
+import torch
+
+from src.generation import generate
+
+prompt_ids = torch.tensor([tokenizer.encode("h")], dtype=torch.long)
+generated_ids = generate(model, prompt_ids, max_new_tokens=10)
+generated_text = tokenizer.decode(generated_ids[0].tolist())
+```
+
+`generate` clones the prompt, repeatedly evaluates only the most recent token, appends the selected token, and returns the complete prompt-plus-continuation tensor. It rejects empty prompts and negative token counts. Because this is a bigram model, each new prediction depends only on the immediately preceding token.
+
+The training text must not be empty, every character passed to `encode` must appear in the training text, and the token sequence must contain at least `block_size + 1` tokens. `examples_to_tensors` requires at least one example, and `generate` requires a nonempty two-dimensional prompt tensor. Local environments, caches, generated datasets, checkpoints, and credentials are excluded by `.gitignore`.
