@@ -834,3 +834,160 @@ The script trains and generates within one process. Model parameters and generat
 
 Our trained model can now extend text one token at a time. Generation preserves the prompt and uses learned parameters without updating them. Its limited context explains why the output can repeat.
 
+
+---
+
+# Step 8 — Causal self-attention
+
+## Goal
+
+Let each token combine information from itself and preceding token positions. Our bigram model processes each token independently; attention provides a way to build representations using context.
+
+This step builds and tests a standalone attention component. It does not change the existing bigram model or train a transformer.
+
+## 1. Which positions can contribute?
+
+For "hell", causal attention permits:
+
+| Receiving position | Character | Allowed contributing positions |
+|---|---|---|
+| 0 | h | 0 |
+| 1 | e | 0, 1 |
+| 2 | l | 0, 1, 2 |
+| 3 | l | 0, 1, 2, 3 |
+
+Future positions are forbidden. During next-token training, the next character is already present at a later input position, so unrestricted attention could reveal the correct answer. Causal masking prevents this information leak.
+
+## 2. Create queries, keys, and values
+
+In `src/attention.py`, `CausalSelfAttention` contains three trainable linear layers, each mapping six input features to six output features without bias.
+
+| Vector | Role |
+|---|---|
+| Query Q | Compared with keys to score contributing positions |
+| Key K | Provides the representation compared with each query |
+| Value V | Supplies the information mixed into the output |
+
+In forward(), `q = self.query(x)`, `k = self.key(x)`, and `v = self.value(x)` apply those layers to the same input embeddings.
+
+This is self-attention because Q, K, and V all come from the same sequence.
+
+Each layer has 6 × 6 weights, so this standalone attention component has 108 trainable parameters.
+
+## 3. Calculate pairwise scores
+
+`scores = q @ k.transpose(-2, -1)` computes a dot product between every query and every key within each example.
+
+For input shape (1, 4, 6):
+
+| Tensor | Shape |
+|---|---|
+| Q, K, V | (1, 4, 6) |
+| Transposed K | (1, 6, 4) |
+| Scores | (1, 4, 4) |
+
+Rows identify receiving query positions; columns identify contributing key positions. A score compares one receiving position with one potential source position.
+
+The code then divides scores by the square root of the query dimension, here sqrt(6). This scaling controls score magnitude as the vector dimension changes.
+
+## 4. Build and apply the causal mask
+
+`torch.ones(sequence_length, sequence_length, dtype=torch.bool, device=x.device)` creates a square Boolean matrix.
+
+`torch.tril(...)` keeps the lower triangle, including the diagonal:
+
+| Query position | Key 0 | Key 1 | Key 2 | Key 3 |
+|---|---|---|---|---|
+| 0 | Allowed | Blocked | Blocked | Blocked |
+| 1 | Allowed | Allowed | Blocked | Blocked |
+| 2 | Allowed | Allowed | Allowed | Blocked |
+| 3 | Allowed | Allowed | Allowed | Allowed |
+
+The mask has shape (4, 4) and is applied across examples.
+
+`scores.masked_fill(~allowed, float("-inf"))` replaces forbidden scores with negative infinity. The tilde inverts the Boolean mask, selecting blocked positions.
+
+## 5. Convert scores into attention weights
+
+`weights = torch.softmax(scores, dim=-1)` operates across the contributing positions in each row.
+
+The resulting weights are nonnegative, sum to approximately one per row, and are zero for masked future positions.
+
+These are weights over **sequence positions**, not probabilities over vocabulary tokens.
+
+## 6. Mix the value vectors
+
+`output = weights @ v` computes a weighted sum of value vectors for each receiving position.
+
+| Tensor | Shape |
+|---|---|
+| Attention weights | (1, 4, 4) |
+| Value vectors | (1, 4, 6) |
+| Output vectors | (1, 4, 6) |
+
+The output contains a six-value vector per position, combining information from allowed positions. It does not contain next-token vocabulary scores.
+
+The component returns both output and weights, allowing us to inspect how the combination was formed.
+
+## 7. Why the demonstration uses uniform weights
+
+In `scripts/step_08_attention.py`, we embed "hell" and temporarily set the query and key weight matrices to zero.
+
+All unmasked scores become zero, so softmax assigns equal weights to the allowed positions:
+
+| Receiving position | Weight for position 0 | Position 1 | Position 2 | Position 3 |
+|---|---|---|---|---|
+| 0 | 1 | 0 | 0 | 0 |
+| 1 | 1/2 | 1/2 | 0 | 0 |
+| 2 | 1/3 | 1/3 | 1/3 | 0 |
+| 3 | 1/4 | 1/4 | 1/4 | 1/4 |
+
+The value layer remains randomly initialized. In this controlled setup, each output is simply the average of its allowed value vectors.
+
+This manual zeroing is for inspection, not a recommended training initialization. Normally, the trainable Q and K layers can produce different scores for different query/key pairs.
+
+## 8. Read the script’s expected shapes
+
+| Item | Shape |
+|---|---|
+| Token IDs for "hell" | (1, 4) |
+| Embeddings | (1, 4, 6) |
+| Attention output | (1, 4, 6) |
+| Attention weights | (1, 4, 4) |
+| Displayed weights[0] | (4, 4) |
+
+The script expects both checks to be True: rows sum to one, and future positions have zero weight.
+
+## 9. Verify the behavior with tests
+
+In `tests/test_attention.py`, we added two tests:
+
+| Test | What it verifies |
+|---|---|
+| Future information is blocked | Changing the last input vector does not change earlier output vectors; future weights are zero and rows sum to one |
+| Uniform attention averages allowed values | With zero Q and K weights, each output equals the mean of its allowed value vectors |
+
+The tests use `torch.allclose` for floating-point comparisons rather than requiring exact equality for calculated averages.
+
+With all earlier tests present and passing, the expected total is **21 passed**. This is an expected result, not a reported test run.
+
+## 10. What attention does and does not provide yet
+
+The two l positions can now receive different context-dependent outputs because their allowed contributing positions differ.
+
+We have built one attention head. We have not yet added explicit position representations, a feed-forward network, residual connections, normalization, or integration with the language-model output layer.
+
+The causal mask supplies a direction restriction; it is not a replacement for position representations.
+
+## 11. Installations and storage
+
+No new installations are required. Activate the existing .venv and use PyTorch and pytest.
+
+The demonstration runs without gradient tracking and performs no training updates. Parameters and output tensors exist in memory during execution; the script saves no checkpoint.
+
+## What we achieved
+
+**Embeddings → Q/K/V → scaled scores → causal mask → softmax weights → weighted value vectors**
+
+We now have a tested component that lets each position gather information from itself and earlier positions while blocking access to future input.
+

@@ -1,6 +1,6 @@
 # Tiny LLM from Scratch
 
-A small, incremental project for learning how language models work. The project currently covers character-level tokenization, preparing shifted input/target examples, converting those examples into PyTorch tensors, looking up trainable token embeddings, producing next-token scores with a tiny bigram language model, training that model with cross-entropy loss, and generating text one token at a time.
+A small, incremental project for learning how language models work. The project currently covers character-level tokenization, preparing shifted input/target examples, converting those examples into PyTorch tensors, looking up trainable token embeddings, producing next-token scores with a tiny bigram language model, training that model with cross-entropy loss, generating text one token at a time, and implementing causal self-attention.
 
 ## Important distinctions
 
@@ -23,7 +23,8 @@ A small, incremental project for learning how language models work. The project 
 - `calculate_loss` measures next-token prediction error with cross-entropy.
 - `train_model` updates model parameters with Adam and reports the initial and final loss.
 - `generate` repeatedly selects the highest-scoring next token and appends it to a prompt.
-- Tokenizer, dataset, tensor, embedding, model, training, and generation components are covered by pytest tests.
+- `CausalSelfAttention` uses scaled dot-product attention while blocking future positions.
+- Tokenizer, dataset, tensor, embedding, model, training, generation, and attention components are covered by pytest tests.
 
 ## Project layout
 
@@ -42,6 +43,8 @@ src/training.py               Loss calculation and training loop
 scripts/step_06_training.py   Model training demonstration
 src/generation.py             Greedy autoregressive generation
 scripts/step_07_generation.py Text generation demonstration
+src/attention.py              Causal self-attention component
+scripts/step_08_attention.py  Attention masking demonstration
 tests/test_tokenizer.py       Automated tests
 tests/test_dataset.py         Dataset helper tests
 tests/test_tensors.py         Tensor helper tests
@@ -49,6 +52,7 @@ tests/test_embeddings.py      Embedding component tests
 tests/test_model.py            Model tests
 tests/test_training.py        Training helper tests
 tests/test_generation.py      Generation helper tests
+tests/test_attention.py       Attention component tests
 requirements.txt              Pinned development dependencies
 ```
 
@@ -118,6 +122,14 @@ python scripts/step_07_generation.py
 
 The generation demo trains the model, starts with the prompt `h`, and appends 10 predicted characters. Generation uses greedy decoding: at each step it selects the highest-scoring token, runs without gradients, preserves the original prompt, and leaves model parameters unchanged.
 
+To inspect causal self-attention:
+
+```bash
+python scripts/step_08_attention.py
+```
+
+The attention demo projects token embeddings into queries, keys, and values, computes scaled dot-product scores, masks future positions, and prints the resulting attention weights. Each row of weights sums to one, and no token can attend to a later token.
+
 ## Run the tests
 
 ```bash
@@ -186,7 +198,7 @@ assert tuple(logits.shape) == (len(examples), 4, tokenizer.vocab_size)
 assert tuple(predicted_ids.shape) == (len(examples), 4)
 ```
 
-This first model uses only the current token’s embedding when producing its scores. It has no attention, positional information, or context window beyond the current token.
+This first model uses only the current token’s embedding when producing its scores. It has no positional information or context window beyond the current token. The causal attention component exists as a separate building block and is not integrated into `BigramLanguageModel` yet.
 
 The model can be trained with the helpers in `src/training.py`:
 
@@ -220,4 +232,18 @@ generated_text = tokenizer.decode(generated_ids[0].tolist())
 
 `generate` clones the prompt, repeatedly evaluates only the most recent token, appends the selected token, and returns the complete prompt-plus-continuation tensor. It rejects empty prompts and negative token counts. Because this is a bigram model, each new prediction depends only on the immediately preceding token.
 
-The training text must not be empty, every character passed to `encode` must appear in the training text, and the token sequence must contain at least `block_size + 1` tokens. `examples_to_tensors` requires at least one example, and `generate` requires a nonempty two-dimensional prompt tensor. Local environments, caches, generated datasets, checkpoints, and credentials are excluded by `.gitignore`.
+Attention can be applied to a sequence of embedding vectors:
+
+```python
+from src.attention import CausalSelfAttention
+
+attention = CausalSelfAttention(embedding_dim=6)
+attention_output, weights = attention(vectors)
+
+assert tuple(attention_output.shape) == tuple(vectors.shape)
+assert tuple(weights.shape) == (len(examples), 4, 4)
+```
+
+For input shape `(batch, sequence, embedding)`, the output has the same shape and the attention weights have shape `(batch, sequence, sequence)`. The causal lower-triangular mask ensures position `i` can use positions `0` through `i`, but never a future position.
+
+The training text must not be empty, every character passed to `encode` must appear in the training text, and the token sequence must contain at least `block_size + 1` tokens. `examples_to_tensors` requires at least one example, `generate` requires a nonempty two-dimensional prompt tensor, and attention requires a three-dimensional sequence tensor. Local environments, caches, generated datasets, checkpoints, and credentials are excluded by `.gitignore`.
