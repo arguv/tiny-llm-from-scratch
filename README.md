@@ -1,6 +1,6 @@
 # Tiny LLM from Scratch
 
-A small, incremental project for learning how language models work. The project currently covers character-level tokenization, preparing shifted input/target examples, converting those examples into PyTorch tensors, looking up trainable token embeddings, producing next-token scores with a tiny bigram language model, training that model with cross-entropy loss, generating text one token at a time, implementing causal self-attention, assembling a transformer block, and combining those pieces into a tiny GPT-style model.
+A small, incremental project for learning how language models work. The project currently covers character-level tokenization, preparing shifted input/target examples, converting those examples into PyTorch tensors, looking up trainable token embeddings, producing next-token scores with a tiny bigram language model, training that model with cross-entropy loss, generating text one token at a time, implementing causal self-attention, assembling a transformer block, combining those pieces into a tiny GPT-style model, and tracing the GPT runtime step by step.
 
 ## Important distinctions
 
@@ -26,7 +26,8 @@ A small, incremental project for learning how language models work. The project 
 - `CausalSelfAttention` uses scaled dot-product attention while blocking future positions.
 - `TransformerBlock` combines layer normalization, causal attention, residual connections, and a GELU feed-forward network.
 - `TinyGPT` combines token and position embeddings, a transformer block, final normalization, and a vocabulary output layer.
-- Tokenizer, dataset, tensor, embedding, model, training, generation, attention, transformer, and GPT components are covered by pytest tests.
+- `inspect_runtime` returns the intermediate tensors used to produce the next-token probabilities.
+- Tokenizer, dataset, tensor, embedding, model, training, generation, attention, transformer, GPT, and runtime components are covered by pytest tests.
 
 ## Project layout
 
@@ -51,6 +52,8 @@ src/transformer.py            Transformer block with residual processing
 scripts/step_09_transformer.py Transformer block demonstration
 src/gpt.py                    Tiny GPT-style language model
 scripts/step_10_gpt.py        End-to-end GPT demonstration
+src/runtime.py                Intermediate GPT forward-pass trace
+scripts/step_11_runtime.py    Runtime inspection demonstration
 tests/test_tokenizer.py       Automated tests
 tests/test_dataset.py         Dataset helper tests
 tests/test_tensors.py         Tensor helper tests
@@ -61,6 +64,7 @@ tests/test_generation.py      Generation helper tests
 tests/test_attention.py       Attention component tests
 tests/test_transformer.py     Transformer block tests
 tests/test_gpt.py             GPT model tests
+tests/test_runtime.py         Runtime inspection tests
 requirements.txt              Pinned development dependencies
 ```
 
@@ -153,6 +157,14 @@ python scripts/step_10_gpt.py
 ```
 
 The GPT demo adds learned position embeddings, trains the model for 400 updates, reports the loss change and parameter count, and generates text from the prompt `h`. It is the first stage that connects the transformer block to a vocabulary output layer.
+
+To inspect the GPT runtime one stage at a time:
+
+```bash
+python scripts/step_11_runtime.py
+```
+
+The runtime demo trains the GPT model, traces a `hell` prompt, prints the shapes of each intermediate tensor, shows the top three next-character probabilities, and appends the selected token. The trace runs in evaluation mode without gradients and does not modify model parameters.
 
 ## Run the tests
 
@@ -300,4 +312,22 @@ assert tuple(gpt_logits.shape) == (len(examples), 4, tokenizer.vocab_size)
 
 `TinyGPT` accepts sequences from length 1 through `block_size`. Its `generate` method crops longer histories to the most recent `block_size` tokens before each prediction, while preserving the full prompt-plus-continuation result. Position embeddings therefore provide explicit order information within the active context window.
 
-The training text must not be empty, every character passed to `encode` must appear in the training text, and the token sequence must contain at least `block_size + 1` tokens. `examples_to_tensors` requires at least one example, `generate` requires a nonempty two-dimensional prompt tensor, attention and transformer blocks require a three-dimensional sequence tensor, and `TinyGPT` restricts each input sequence to its configured `block_size`. Local environments, caches, generated datasets, checkpoints, and credentials are excluded by `.gitignore`.
+The runtime trace exposes the same forward-pass stages for inspection:
+
+```python
+from src.runtime import inspect_runtime
+
+trace = inspect_runtime(gpt, prompt_ids)
+
+next_token = trace["next_token"]
+probabilities = trace["probabilities"]
+assert tuple(probabilities.shape) == (1, tokenizer.vocab_size)
+assert torch.allclose(
+    probabilities.sum(dim=-1),
+    torch.ones(1),
+)
+```
+
+The returned dictionary includes the cropped `context`, position IDs, token and position vectors, their `combined` representation, transformer `block_output`, final `normalized` representation, all-position `logits`, last-position `last_logits`, vocabulary `probabilities`, and greedy `next_token`. Contexts longer than `block_size` are cropped to the most recent window.
+
+The training text must not be empty, every character passed to `encode` must appear in the training text, and the token sequence must contain at least `block_size + 1` tokens. `examples_to_tensors` requires at least one example, `generate` and `inspect_runtime` require a nonempty two-dimensional prompt tensor, attention and transformer blocks require a three-dimensional sequence tensor, and `TinyGPT` restricts each input sequence to its configured `block_size`. Local environments, caches, generated datasets, checkpoints, and credentials are excluded by `.gitignore`.

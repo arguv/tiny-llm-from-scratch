@@ -1312,3 +1312,158 @@ The script creates, trains, and uses the model in one process. Parameters and ou
 
 Our project now has a complete tiny GPT-style model with training and context-aware generation. Step 11 will trace how these components execute during generation.
 
+
+---
+
+# Step 11 — Trace runtime execution
+
+## Goal
+
+Inspect what happens inside our tiny GPT when it predicts the next character. This is the final step of the original eleven-step project plan.
+
+We expose intermediate tensors so the path from prompt to prediction is visible. Inspection does not update learned parameters.
+
+## 1. What runtime execution means
+
+Runtime execution is the sequence of computations performed when the model runs.
+
+| Operation | Result |
+|---|---|
+| Encode the prompt | Integer token IDs |
+| Crop to the context window | Most recent input IDs |
+| Look up token and position embeddings | Numeric representations |
+| Run the transformer block | Context-dependent vectors |
+| Normalize and apply the output layer | Vocabulary logits |
+| Select the last position | Scores for the next character |
+| Apply softmax | Probabilities over vocabulary tokens |
+| Choose a token | Predicted ID |
+| Decode and append | Extended text |
+
+Unlike training, inference does not need correct targets, a loss calculation, backpropagation, or optimizer updates.
+
+## 2. What the inspection function does
+
+In `src/runtime.py`, `inspect_runtime(model, token_ids)` follows the current TinyGPT forward computation explicitly and returns intermediate results in a dictionary.
+
+The function rejects empty sequences and inputs that do not have two dimensions. It selects evaluation mode and uses `@torch.no_grad()` to disable gradient tracking.
+
+Evaluation mode and gradient tracking are separate settings. Neither changes parameter values.
+
+## 3. Select context and positions
+
+`context = token_ids[:, -model.block_size:]` selects the most recent available tokens, up to the context limit of four.
+
+`torch.arange(context.shape[1], device=context.device)` creates positions starting at zero within that window.
+
+For the prompt "hell":
+
+| Item | Value |
+|---|---|
+| Context IDs | [[3, 2, 4, 4]] |
+| Position IDs | [0, 1, 2, 3] |
+
+For a longer stored sequence, earlier tokens remain stored but are excluded from this prediction’s input. Position IDs restart at zero for the cropped window in our implementation.
+
+## 4. Follow the representations
+
+| Dictionary entry | Shape for "hell" | Meaning |
+|---|---|---|
+| context | (1, 4) | One sequence of four token IDs |
+| positions | (4,) | Position indices |
+| token_vectors | (1, 4, 6) | Token embedding lookup results |
+| position_vectors | (4, 6) | Position embedding lookup results |
+| combined | (1, 4, 6) | Sum of token and position vectors |
+| block_output | (1, 4, 6) | Output of our transformer block |
+| normalized | (1, 4, 6) | Final normalized representations |
+| logits | (1, 4, 8) | Eight vocabulary scores at every position |
+
+The transformer block internally performs layer normalization, causal attention, residual addition, another normalization, feed-forward processing, and another residual addition.
+
+The inspection function reuses the existing components; it does not define new model parameters. Because it spells out the forward path, it would need updating if we changed that architecture later.
+
+## 5. Why select the last position?
+
+`last_logits = logits[:, -1, :]` selects all examples, the final input position, and all vocabulary entries.
+
+The result has shape (1, 8).
+
+Each position’s scores predict the character after that position’s prefix. The final position therefore predicts the character **after the whole current context**, which is the token we want to append.
+
+Earlier positions’ predictions are useful during training, but they are not the continuation after the complete supplied prompt.
+
+## 6. Convert logits into probabilities
+
+`probabilities = torch.softmax(last_logits, dim=-1)` converts the eight raw scores into nonnegative probabilities that sum to approximately one.
+
+These probabilities are over vocabulary candidates, unlike attention weights, which are over contributing sequence positions.
+
+| Tensor | Shape |
+|---|---|
+| Last-position logits | (1, 8) |
+| Next-token probabilities | (1, 8) |
+| Sum across vocabulary | (1,) |
+
+Softmax preserves score ordering. Greedy selection by argmax produces the same selected ID from logits or their softmax probabilities.
+
+## 7. Select and append a token
+
+`probabilities.argmax(dim=-1, keepdim=True)` selects the most probable token ID and returns shape (1, 1).
+
+The script appends it with torch.cat along dimension 1. A prompt of shape (1, 4) becomes a sequence of shape (1, 5).
+
+The appended ID is decoded using our existing tokenizer. The model’s four-token context limit still applies to the next prediction; it is not a limit on the length of the stored generated sequence.
+
+## 8. What the script prints
+
+In `scripts/step_11_runtime.py`, we train a fresh TinyGPT model for 400 updates, then inspect the prompt "hell".
+
+The script prints:
+
+- The original prompt and selected context IDs.
+- Each intermediate tensor’s shape.
+- A check that vocabulary probabilities sum to one.
+- The three highest-probability next-character candidates.
+- The extended text and its shape, (1, 5).
+
+Exact candidates, probabilities, and extended text depend on the trained parameters. The expected fixed shapes come from the architecture.
+
+The three displayed candidate probabilities do not necessarily sum to one because the vocabulary contains eight candidates.
+
+## 9. What is recomputed during generation?
+
+Our implementation runs the entire cropped context through embeddings, attention, and the remaining layers for every new token.
+
+It does not use a **KV cache**, which stores previously computed attention keys and values to avoid some repeated work in more advanced inference implementations.
+
+A KV cache is an execution optimization, not an extra training step. It is outside this project’s implementation.
+
+## 10. Verify the trace
+
+In `tests/test_runtime.py`, we added three tests:
+
+| Test | What it proves |
+|---|---|
+| Trace matches forward and preserves parameters | Inspection logits match normal model logits, probabilities are valid, greedy IDs agree, and parameter values remain unchanged |
+| Last context window | A five-token input is inspected using its last four tokens with positions 0 through 3 |
+| Empty input fails | An empty prompt raises ValueError |
+
+Comparing the explicit trace against the normal forward method helps catch discrepancies between the inspection path and the actual model.
+
+With all previous tests present and passing, the expected total is **30 passed**. This is an expected result, not a reported run.
+
+## 11. Installations and storage
+
+No new installations are required. Activate the existing project .venv.
+
+The script trains a fresh model because no checkpoint has been saved. Intermediate tensors, learned parameters, and the extended sequence live in memory during the process. The inspection function returns tensors without gradient tracking.
+
+## What we achieved
+
+We can now follow the complete path:
+
+**Prompt → IDs → context → token and position vectors → transformer → logits → probabilities → selected token → extended text**
+
+The original eleven-step implementation plan now covers tokenization, dataset preparation, tensors, embeddings, prediction, training, generation, attention, transformer blocks, a tiny GPT-style model, and runtime inspection.
+
+This remains a small educational model with one head, one block, a four-token context window, and a tiny dataset. Completing the final code, tests, and exercise provides a foundation for understanding larger language models; it does not make this model comparable in capability to a production LLM.
+
